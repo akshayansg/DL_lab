@@ -1,0 +1,109 @@
+import pandas as pd
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+
+# Paths
+base_path = '/content/drive/MyDrive/dl aat/dataset'
+train_csv = os.path.join(base_path, 'train.csv')
+train_dir = os.path.join(base_path, 'train')
+
+# Load train.csv
+df = pd.read_csv(train_csv)
+
+# Create validation split
+train_df, val_df = train_test_split(df, test_size=0.2, stratify=df['target'], random_state=42)
+
+# ImageDataGenerator
+img_size = (224, 224)
+batch_size = 32
+
+datagen = ImageDataGenerator(rescale=1./255,
+                             rotation_range=20,
+                             width_shift_range=0.1,
+                             height_shift_range=0.1,
+                             zoom_range=0.2,
+                             horizontal_flip=True)
+
+val_datagen = ImageDataGenerator(rescale=1./255)
+
+train_generator = datagen.flow_from_dataframe(
+    train_df,
+    directory=train_dir,
+    x_col='Image',
+    y_col='target',
+    target_size=img_size,
+    class_mode='categorical',
+    batch_size=batch_size
+)
+
+val_generator = val_datagen.flow_from_dataframe(
+    val_df,
+    directory=train_dir,
+    x_col='Image',
+    y_col='target',
+    target_size=img_size,
+    class_mode='categorical',
+    batch_size=batch_size
+)
+
+# MobileNetV2 base
+base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = False  # freeze base
+
+# Custom top
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dropout(0.3)(x)
+x = Dense(128, activation='relu')(x)
+x = Dropout(0.3)(x)
+predictions = Dense(8, activation='softmax')(x)
+
+model = Model(inputs=base_model.input, outputs=predictions)
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Callbacks
+callbacks = [
+    EarlyStopping(patience=5, restore_best_weights=True),
+    ModelCheckpoint("best_model.h5", save_best_only=True)
+]
+
+# Train
+history = model.fit(
+    train_generator,
+    validation_data=val_generator,
+    epochs=20,
+    callbacks=callbacks
+)
+
+# Mapping index to class name
+class_indices = train_generator.class_indices
+index_to_class = {v: k for k, v in class_indices.items()}
+
+# Function to predict and display image
+def predict_image(img_path, model_path="best_model.h5"):
+    model = load_model(model_path)
+
+    # Load and preprocess image
+    img = load_img(img_path, target_size=(224, 224))
+    img_array = img_to_array(img) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+
+    # Predict
+    pred = model.predict(img_array)
+    pred_class = index_to_class[np.argmax(pred)]
+
+    # Display
+    plt.imshow(load_img(img_path))
+    plt.axis('off')
+    plt.title(f"Prediction: {pred_class}")
+    plt.show()
+
+
+
